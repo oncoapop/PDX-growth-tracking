@@ -1,0 +1,19 @@
+# Input Excel directory. Relative paths are resolved from this config file.
+input_dir: examples
+
+# Output directory. Relative paths are resolved from this config file.
+output_dir: outputs
+
+# Excel files to read.
+pattern: "Tumor Volumes*.xlsx"
+
+# Main tumour-growth plot settings.
+aggregate: sum
+include_zero: false
+scale: all
+
+# Current PDX projection settings.
+min_latest_volume_for_projection: 200
+projection_thresholds_mm3: [500, 1000]
+projection_fit_windows: [5, 4, 3]
+min_projection_r2: 0.5
