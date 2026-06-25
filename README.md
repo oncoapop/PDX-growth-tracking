@@ -53,7 +53,7 @@ The script scans each workbook for sheets with `Mouse ID` and `Volume (mm3)` hea
 - worksheet name, for example `Xenograft` or `Organoid Study`
 - mouse ID and cage ID
 - tumour model from the comments column, for example `SA501 Breast`
-- tumour site, for example `L`, `R`, `B`, or `N`
+- mouse identification (ear notch) for example `L`, `R`, `B`, or `N`
 - tumour volume in mm3
 - source workbook and Excel row number for auditability
 
