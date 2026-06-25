@@ -1,6 +1,6 @@
-# Tumour Growth Analysis
+# PDX Growth Tracking
 
-Reusable analysis script for mouse tumour-volume Excel workbooks.
+Reusable analysis script for PDX mouse tumour-volume Excel workbooks.
 
 The script reads dated `Tumor Volumes*.xlsx` files, extracts tumour measurements by worksheet, mouse/cage ID, tumour model, and tumour site, then generates:
 
