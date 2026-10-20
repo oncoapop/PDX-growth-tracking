@@ -59,9 +59,11 @@ The script scans each workbook for sheets with `Mouse ID` and `Volume (mm3)` hea
 
 Rows with blank mouse IDs inherit the most recent valid mouse ID, matching the template structure used in the source workbooks. Rows marked as passage notes are kept as notes but do not overwrite the mouse ID.
 
+Parenthesised identifiers are part of the cage ID. For example, `251220(1)` and `251220(3)` are plotted as separate cages. A trailing mouse suffix remains grouped within its parent cage, so `260409(2)-1` is assigned to cage `260409(2)`.
+
 ## Growth Plots
 
-The main growth plots group traces by cage, tumour model, and worksheet. Trace labels include mouse ID and tumour site.
+The main growth plots group traces by the complete cage ID, tumour model, and worksheet. Trace labels include mouse ID and tumour site.
 
 Generated plot variants:
 

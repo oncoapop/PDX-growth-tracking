@@ -17,12 +17,15 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault(
-    "MPLCONFIGDIR",
-    str(Path(tempfile.gettempdir()) / f"matplotlib-cache-{os.getuid()}"),
-)
+plot_cache_dir = Path(tempfile.gettempdir()) / f"pdx-growth-cache-{os.getuid()}"
+os.environ.setdefault("MPLCONFIGDIR", str(plot_cache_dir / "matplotlib"))
+os.environ.setdefault("XDG_CACHE_HOME", str(plot_cache_dir))
 
+import matplotlib
 import matplotlib.dates as mdates
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -152,7 +155,8 @@ def parse_date_from_filename(path: Path) -> pd.Timestamp | None:
 
 def normalize_cage(mouse_id: str) -> str:
     cage = mouse_id.strip().replace("*", "")
-    cage = re.sub(r"\([^)]*\)\s*$", "", cage)
+    # Parenthesised identifiers distinguish physical cages, for example
+    # 251220(1) and 251220(3). Only a trailing mouse suffix is removed.
     cage = re.sub(r"-\d+\s*$", "", cage)
     return cage.strip() or mouse_id
 
