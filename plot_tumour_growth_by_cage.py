@@ -33,6 +33,7 @@ import pandas as pd
 
 
 DATE_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})")
+CAGE_DATE_RE = re.compile(r"(\d{6})")
 PASSAGE_RE = re.compile(r"^passage\b", re.IGNORECASE)
 MODEL_RE = re.compile(r"\b(SA\d+[A-Z]?)\b(?:\s+([A-Za-z]+))?", re.IGNORECASE)
 FIT_WINDOWS = (5, 4, 3)
@@ -42,12 +43,7 @@ PROJECTION_THRESHOLDS = (500, 1000)
 
 
 def code_version() -> str:
-    """Short git description of the code that drew a figure.
-
-    Stamped into every figure footer so a plot in a slide deck or manuscript
-    can be traced back to the exact commit that produced it. Returns an empty
-    string outside a git checkout.
-    """
+    """Short git description of the code that drew a figure."""
     repo = Path(__file__).resolve().parent
     try:
         sha = subprocess.run(
@@ -251,6 +247,102 @@ def threshold_label_offset(series_index: int, threshold: int) -> tuple[int, int]
 def display_date_label(value: pd.Timestamp) -> str:
     timestamp = pd.Timestamp(value)
     return f"{timestamp.day} {timestamp.strftime('%b')}"
+
+
+def parse_transplant_date(cage: Any) -> pd.Timestamp | None:
+    """Cage IDs encode the transplant date as YYMMDD.
+
+    Handles an optional letter prefix and a replicate suffix:
+    260715(1) -> 2026-07-15, O251010 -> 2025-10-10, OS260529 -> 2026-05-29.
+    """
+    match = CAGE_DATE_RE.search(as_text(cage))
+    if not match:
+        return None
+    digits = match.group(1)
+    try:
+        return pd.Timestamp(2000 + int(digits[:2]), int(digits[2:4]), int(digits[4:6]))
+    except ValueError:
+        return None
+
+
+def latency_days(cage: Any, first_measurement: Any) -> int | None:
+    """Days from transplant (encoded in the cage ID) to first recorded tumour volume."""
+    transplant = parse_transplant_date(cage)
+    if transplant is None or pd.isna(first_measurement):
+        return None
+    days = (pd.Timestamp(first_measurement).normalize() - transplant).days
+    return days if days >= 0 else None
+
+
+def collect_latency_label(labels, cage, first_date, first_value, color, censored):
+    """Queue a latency callout; positions are resolved later by place_latency_labels."""
+    days = latency_days(cage, first_date)
+    if days is None:
+        return None
+    text = f"\u2265{days} d" if censored else f"{days} d"
+    labels.append({"x": first_date, "y": first_value, "text": text, "color": color})
+    return days
+
+
+def place_latency_labels(ax, labels, min_sep_px: float = 13.0) -> None:
+    """Repel overlapping callouts vertically, the way ggrepel does in R.
+
+    Labels are nudged apart in display space and kept inside the axes, so
+    traces whose first measurement coincides stay individually readable.
+    """
+    if not labels:
+        return
+    dpi = ax.figure.dpi
+    x_lo, x_hi = ax.get_xlim()
+    y_lo, y_hi = ax.get_ylim()
+
+    placed = []
+    for label in labels:
+        raw_x = label["x"]
+        if isinstance(raw_x, (int, float, np.integer, np.floating)):
+            x_num = float(raw_x)
+        else:
+            x_num = mdates.date2num(pd.Timestamp(raw_x).to_pydatetime())
+        try:
+            px, py = ax.transData.transform((x_num, label["y"]))
+        except (ValueError, OverflowError):
+            continue
+        # flip the callout inward when the anchor sits near the right edge
+        right_edge = ax.transData.transform((x_hi, label["y"]))[0]
+        inward = (right_edge - px) < 70
+        placed.append({**label, "px": px, "py": py, "inward": inward})
+
+    top_px = ax.transData.transform((x_num, y_hi))[1] if placed else 0
+    placed.sort(key=lambda item: item["py"])
+    previous = None
+    for item in placed:
+        target = item["py"] + 11
+        if previous is not None and target < previous + min_sep_px:
+            target = previous + min_sep_px
+        item["target"] = min(target, top_px - 8)
+        previous = item["target"]
+
+    for item in placed:
+        dy_points = (item["target"] - item["py"]) * 72.0 / dpi
+        dx_points = -9 if item["inward"] else 9
+        ax.annotate(
+            item["text"],
+            (item["x"], item["y"]),
+            xytext=(dx_points, dy_points),
+            textcoords="offset points",
+            fontsize=7.5,
+            fontweight="bold",
+            color=item["color"],
+            ha="right" if item["inward"] else "left",
+            va="bottom",
+            annotation_clip=False,
+            arrowprops={"arrowstyle": "-", "color": item["color"], "lw": 0.6, "alpha": 0.7},
+        )
+
+
+def transplant_title_suffix(cage: Any) -> str:
+    transplant = parse_transplant_date(cage)
+    return f"\ntransplanted {transplant:%Y-%m-%d}" if transplant is not None else ""
 
 
 def fit_recent_exponential(trace: pd.DataFrame) -> dict[str, Any]:
@@ -457,6 +549,7 @@ def plot_by_cage(
     y_mode: str = "free",
     generated_date: str = "",
     latest_measurement_date: str = "",
+    first_record_date: pd.Timestamp | None = None,
 ) -> None:
     plot_groups = sorted(plot_data["plot_group"].dropna().unique())
     n_groups = len(plot_groups)
@@ -476,17 +569,27 @@ def plot_by_cage(
 
     for ax, plot_group in zip(axes.flat, plot_groups):
         group_data = plot_data[plot_data["plot_group"] == plot_group]
-        for plot_label, mouse_data in group_data.groupby("plot_label"):
+        latency_labels: list[dict[str, Any]] = []
+        for index, (plot_label, mouse_data) in enumerate(group_data.groupby("plot_label")):
             mouse_data = mouse_data.sort_values("date")
-            ax.plot(
+            line, = ax.plot(
                 mouse_data["date"],
                 mouse_data["tumour_volume_mm3"],
                 marker="o",
                 linewidth=1.8,
                 label=plot_label,
             )
+            first = mouse_data.iloc[0]
+            collect_latency_label(
+                latency_labels,
+                plot_group,
+                first["date"],
+                first["tumour_volume_mm3"],
+                line.get_color(),
+                censored=pd.Timestamp(first["date"]) <= first_record_date,
+            )
 
-        ax.set_title(f"Cage {plot_group}", fontsize=11)
+        ax.set_title(f"Cage {plot_group}{transplant_title_suffix(plot_group)}", fontsize=11)
         ax.set_ylabel("Tumour volume (mm3)")
         ax.grid(True, alpha=0.25)
         ax.legend(fontsize=8, frameon=False)
@@ -496,6 +599,7 @@ def plot_by_cage(
         elif y_mode == "log":
             ax.set_yscale("log")
             ax.set_ylim(max(1, plot_data["tumour_volume_mm3"].min() * 0.85), max_volume * 1.15)
+        place_latency_labels(ax, latency_labels)
 
     for ax in axes.flat[n_groups:]:
         ax.axis("off")
@@ -512,7 +616,97 @@ def plot_by_cage(
     fig.text(
         0.5,
         0.975,
-        f"Generated {generated_date} | Data through {latest_measurement_date}{version_suffix()}",
+        f"Generated {generated_date} | Data through {latest_measurement_date} | "
+        f"callout = days transplant \u2192 first record; \u2265 means censored by record start "
+        f"({first_record_date:%Y-%m-%d}){version_suffix()}",
+        ha="center",
+        va="top",
+        fontsize=10,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.955))
+    fig.savefig(output_png, dpi=300, bbox_inches="tight")
+    fig.savefig(output_pdf, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_by_cage_days(
+    plot_data: pd.DataFrame,
+    output_png: Path,
+    output_pdf: Path,
+    generated_date: str = "",
+    latest_measurement_date: str = "",
+    first_record_date: pd.Timestamp | None = None,
+) -> None:
+    """Same traces, but x = days since that cage's transplant, so day 0 aligns.
+
+    Each trace begins at its own latency, and a dotted leader runs back to day 0
+    with the latency labelled on it, so the callouts spread along the leader
+    instead of piling up at the origin.
+    """
+    plot_groups = sorted(plot_data["plot_group"].dropna().unique())
+    plot_groups = [g for g in plot_groups if parse_transplant_date(g) is not None]
+    if not plot_groups:
+        return
+    n_groups = len(plot_groups)
+    n_cols = min(3, max(1, n_groups))
+    n_rows = math.ceil(n_groups / n_cols)
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(5.2 * n_cols, 3.9 * n_rows), squeeze=False
+    )
+
+    for ax, plot_group in zip(axes.flat, plot_groups):
+        transplant = parse_transplant_date(plot_group)
+        group_data = plot_data[plot_data["plot_group"] == plot_group]
+        latency_labels: list[dict[str, Any]] = []
+
+        for plot_label, mouse_data in group_data.groupby("plot_label"):
+            mouse_data = mouse_data.sort_values("date").copy()
+            mouse_data["day"] = (mouse_data["date"] - transplant).dt.days
+            line, = ax.plot(
+                mouse_data["day"],
+                mouse_data["tumour_volume_mm3"],
+                marker="o",
+                linewidth=1.8,
+                label=plot_label,
+            )
+            first = mouse_data.iloc[0]
+            censored = pd.Timestamp(first["date"]) <= first_record_date
+            # dotted leader from transplant to first record, carrying the label
+            ax.plot(
+                [0, first["day"]],
+                [first["tumour_volume_mm3"]] * 2,
+                linestyle=":",
+                linewidth=1.0,
+                color=line.get_color(),
+                alpha=0.55,
+            )
+            days = int(first["day"])
+            latency_labels.append({
+                "x": first["day"] / 2.0,
+                "y": first["tumour_volume_mm3"],
+                "text": f"\u2265{days} d" if censored else f"{days} d",
+                "color": line.get_color(),
+            })
+
+        ax.axvline(0, color="#444444", linewidth=1.1)
+        ax.set_title(f"Cage {plot_group}\ntransplanted {transplant:%Y-%m-%d}", fontsize=11)
+        ax.set_xlabel("Days since transplant", fontsize=9)
+        ax.set_ylabel("Tumour volume (mm3)")
+        ax.set_xlim(left=-max(4, ax.get_xlim()[1] * 0.04))
+        ax.grid(True, alpha=0.25)
+        ax.legend(fontsize=8, frameon=False)
+        place_latency_labels(ax, latency_labels)
+
+    for ax in axes.flat[n_groups:]:
+        ax.axis("off")
+
+    fig.suptitle("Tumour Growth per Mouse by Cage (aligned at transplant)", fontsize=15, y=0.995)
+    fig.text(
+        0.5,
+        0.975,
+        f"Generated {generated_date} | Data through {latest_measurement_date} | "
+        f"dotted leader = transplant \u2192 first record; \u2265 means censored by record start "
+        f"({first_record_date:%Y-%m-%d}){version_suffix()}",
         ha="center",
         va="top",
         fontsize=10,
@@ -564,6 +758,11 @@ def build_pdx_projections(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFram
             "tumour_model": model,
             "mouse_id": mouse_id,
             "tumour_site": site,
+            "transplant_date": (lambda d: d.date().isoformat() if d is not None else "")(
+                parse_transplant_date(cage)
+            ),
+            "latency_days": latency_days(cage, trace.iloc[0]["date"]),
+            "latency_censored": bool(trace.iloc[0]["date"] <= pdx["date"].min()),
             "latest_measurement_date": latest["date"].date().isoformat(),
             "latest_volume_mm3": latest["tumour_volume_mm3"],
             "fit_measurements": len(fit),
@@ -604,6 +803,7 @@ def plot_pdx_projections(
     output_pdf: Path,
     generated_date: str,
     latest_measurement_date: str,
+    first_record_date: pd.Timestamp | None = None,
 ) -> None:
     if observed.empty or summary.empty:
         return
@@ -634,6 +834,7 @@ def plot_pdx_projections(
             & (summary["tumour_model"] == model)
         ]
 
+        latency_labels: list[dict[str, Any]] = []
         for color_index, (label, trace) in enumerate(group_observed.groupby("trace_label")):
             color = colors(color_index % 10)
             trace = trace.sort_values("date")
@@ -644,6 +845,15 @@ def plot_pdx_projections(
                 marker="o",
                 linewidth=1.8,
                 label=label,
+            )
+            first = trace.iloc[0]
+            collect_latency_label(
+                latency_labels,
+                cage,
+                first["date"],
+                first["tumour_volume_mm3"],
+                color,
+                censored=pd.Timestamp(first["date"]) <= first_record_date,
             )
             row = group_summary[
                 (group_summary["mouse_id"].astype(str) + " " + group_summary["tumour_site"].astype(str)) == label
@@ -692,11 +902,12 @@ def plot_pdx_projections(
 
         ax.axhline(500, color="#555555", linestyle=":", linewidth=1)
         ax.axhline(1000, color="#222222", linestyle=":", linewidth=1)
-        ax.set_title(f"Cage {cage} {model} ({sheet})", fontsize=11)
+        ax.set_title(f"Cage {cage} {model} ({sheet}){transplant_title_suffix(cage)}", fontsize=11)
         ax.set_ylabel("Tumour volume (mm3)")
         ax.set_ylim(0, y_max)
         ax.grid(True, alpha=0.25)
         configure_date_axis(ax)
+        place_latency_labels(ax, latency_labels)
 
     for ax in axes.flat[len(groups):]:
         ax.axis("off")
@@ -708,6 +919,7 @@ def plot_pdx_projections(
         0.5,
         0.925,
         f"Measured on {latest_measurement_date} | Solid = observed | Dashed = projected | "
+        f"callout = days transplant \u2192 first record (\u2265 = censored) | "
         f"Generated {generated_date}{version_suffix()}",
         ha="center",
         va="top",
@@ -757,10 +969,22 @@ def main() -> None:
 
     generated_date = date.today().isoformat()
     latest_measurement_date = data["date"].max().date().isoformat()
+    first_record_date = data["date"].min()
     date_tag = f"generated_{generated_date}_through_{latest_measurement_date}"
 
     data["analysis_generated_date"] = generated_date
     data["latest_measurement_date"] = latest_measurement_date
+    data["transplant_date"] = data["cage"].map(
+        lambda cage: (lambda d: d.date().isoformat() if d is not None else "")(parse_transplant_date(cage))
+    )
+    first_measurement = data.groupby("mouse_id")["date"].transform("min")
+    data["latency_days"] = [
+        latency_days(cage, first) for cage, first in zip(data["cage"], first_measurement)
+    ]
+    # Records only begin when the first spreadsheet was written. Any animal whose
+    # first measurement lands on that date was transplanted earlier, so its latency
+    # is left-censored: a lower bound, not an observed time to tumour.
+    data["latency_censored"] = first_measurement <= first_record_date
     extracted_csv = output_dir / f"tumour_growth_extracted_rows_{date_tag}.csv"
     plot_csv = output_dir / f"tumour_growth_per_mouse_{aggregate}_{date_tag}.csv"
     data.to_csv(extracted_csv, index=False)
@@ -781,8 +1005,21 @@ def main() -> None:
             y_mode=mode,
             generated_date=generated_date,
             latest_measurement_date=latest_measurement_date,
+            first_record_date=first_record_date,
         )
         written_plots.extend([mode_png, mode_pdf])
+
+    days_png = output_dir / f"tumour_growth_by_cage_{aggregate}_days_{date_tag}.png"
+    days_pdf = output_dir / f"tumour_growth_by_cage_{aggregate}_days_{date_tag}.pdf"
+    plot_by_cage_days(
+        plot_data,
+        days_png,
+        days_pdf,
+        generated_date=generated_date,
+        latest_measurement_date=latest_measurement_date,
+        first_record_date=first_record_date,
+    )
+    written_plots.extend([days_png, days_pdf])
 
     pdx_observed, pdx_summary = build_pdx_projections(data)
     pdx_csv = output_dir / f"pdx_growth_projection_over_200_{date_tag}.csv"
@@ -799,6 +1036,7 @@ def main() -> None:
             pdx_pdf,
             generated_date,
             latest_measurement_date,
+            first_record_date,
         )
 
     print(f"Read {data['source_file'].nunique()} Excel files")
