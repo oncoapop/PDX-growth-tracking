@@ -12,6 +12,7 @@ import argparse
 import math
 import os
 import re
+import subprocess
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -38,6 +39,35 @@ FIT_WINDOWS = (5, 4, 3)
 MIN_PROJECTION_R2 = 0.5
 MIN_LATEST_VOLUME_FOR_PROJECTION = 200.0
 PROJECTION_THRESHOLDS = (500, 1000)
+
+
+def code_version() -> str:
+    """Short git description of the code that drew a figure.
+
+    Stamped into every figure footer so a plot in a slide deck or manuscript
+    can be traced back to the exact commit that produced it. Returns an empty
+    string outside a git checkout.
+    """
+    repo = Path(__file__).resolve().parent
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    if not sha:
+        return ""
+    dirty = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True, text=True, timeout=5,
+    ).stdout.strip()
+    return f"{sha}-dirty" if dirty else sha
+
+
+def version_suffix() -> str:
+    version = code_version()
+    return f" | code {version}" if version else ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -482,7 +512,7 @@ def plot_by_cage(
     fig.text(
         0.5,
         0.975,
-        f"Generated {generated_date} | Data through {latest_measurement_date}",
+        f"Generated {generated_date} | Data through {latest_measurement_date}{version_suffix()}",
         ha="center",
         va="top",
         fontsize=10,
@@ -677,7 +707,8 @@ def plot_pdx_projections(
     fig.text(
         0.5,
         0.925,
-        f"Measured on {latest_measurement_date} | Solid = observed | Dashed = projected | Generated {generated_date}",
+        f"Measured on {latest_measurement_date} | Solid = observed | Dashed = projected | "
+        f"Generated {generated_date}{version_suffix()}",
         ha="center",
         va="top",
         fontsize=10,
