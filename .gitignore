@@ -1,7 +1,23 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-outputs/
-tumour_growth_plots/
 .venv/
 venv/
+
+# Generated outputs — regenerable from data + arm key, never versioned
+outputs/
+tumour_growth_plots/
+
+# Machine-local configuration
+config.local.yml
+*.local.yml
+
+# Real experimental data and study design — never versioned
+# (see Codex policies/work-data-handling.md)
+data/
+arm_key.csv
+Tumor Volumes*.xlsx
+Monitoring Sheet*.xlsx
+
+# ...but hand-made synthetic examples are fine. Keep this rule last.
+!*.example.xlsx
