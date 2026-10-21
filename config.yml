@@ -2,7 +2,7 @@
 input_dir: examples
 
 # Output directory. Relative paths are resolved from this config file.
-output_dir: outputs
+output_dir: outputs_example
 
 # Excel files to read.
 pattern: "Tumor Volumes*.xlsx"
