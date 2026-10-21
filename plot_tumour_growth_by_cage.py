@@ -438,8 +438,8 @@ def plot_by_cage(
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=(5.2 * n_cols, 3.7 * n_rows),
-        sharex=True,
+        figsize=(5.2 * n_cols, 3.9 * n_rows),
+        sharex=False,
         sharey=shared_y,
         squeeze=False,
     )
@@ -470,8 +470,8 @@ def plot_by_cage(
     for ax in axes.flat[n_groups:]:
         ax.axis("off")
 
-    for ax in axes[-1, :]:
-        ax.set_xlabel("Date")
+    for ax in list(axes.flat)[:n_groups]:
+        ax.set_xlabel("Date", fontsize=9)
 
     scale_label = {
         "free": "free y-axis",
@@ -670,8 +670,8 @@ def plot_pdx_projections(
 
     for ax in axes.flat[len(groups):]:
         ax.axis("off")
-    for ax in axes[-1, :]:
-        ax.set_xlabel("Date")
+    for ax in list(axes.flat)[:len(groups)]:
+        ax.set_xlabel("Date", fontsize=9)
 
     fig.suptitle("Current PDX Growth Projection for Volume >200 mm3", fontsize=15, y=0.98)
     fig.text(
