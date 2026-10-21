@@ -21,3 +21,6 @@ Monitoring Sheet*.xlsx
 
 # ...but hand-made synthetic examples are fine. Keep this rule last.
 !*.example.xlsx
+
+# Example-config run outputs
+outputs_example/
